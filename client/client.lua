@@ -1,12 +1,8 @@
 local QBCore = exports['qb-core']:GetCoreObject()
 local activeBlips = {}
-local playerPed = PlayerPedId()  -- Mendapatkan Ped pemain yang aktif
-local playerId = PlayerId()      -- Mendapatkan ID pemain yang aktif
 local shotsFired = 0
 local SHOTS_REQUIRED = 7 -- Jumlah peluru yang harus keluar sebelum dispatch dikirim
 local lastWeapon = nil
-local weaponCheckTimer = 0
-local lastExplosionTime = 0
 local recentExplosions = {}
 
 
@@ -129,9 +125,13 @@ RegisterNUICallback('setActive', function(data,cb)
 end)
 
 RegisterNUICallback('setLocation', function(data,cb)
-    QBCore.Functions.TriggerCallback('exter-dispatch:getLocation', function(cb)
-        SetNewWaypoint(cb.x, cb.y)
-        cb(true)
+    QBCore.Functions.TriggerCallback('exter-dispatch:getLocation', function(location)
+        if location and location.x and location.y then
+            SetNewWaypoint(location.x, location.y)
+            cb(true)
+            return
+        end
+        cb(false)
     end, data.id)
 end)
 
@@ -532,7 +532,8 @@ Citizen.CreateThread(function()
                 dispatchnumber = nil
             })
 
-            local job = QBCore.Functions.GetPlayerData().job.name
+            local playerData = QBCore.Functions.GetPlayerData()
+            local job = playerData.job and playerData.job.name
             if job == "ambulance" or job == "police" then
                 TriggerEvent('chatMessage', 'DISPATCH ', {255, 0, 0}, ('[10-47] Person Down at %s'):format(streetName), 'game')
                 TriggerEvent('InteractSound_CL:PlayOnAll', 'panicbutton', 0.5)
@@ -549,7 +550,6 @@ Citizen.CreateThread(function()
 end)
 
 --ledakan
-local recentExplosions = {}
 Citizen.CreateThread(function()
     while true do
         Wait(300)
@@ -633,6 +633,7 @@ Citizen.CreateThread(function()
     end
 end)
 
+if type(DispatchBlip) ~= "function" then
 function DispatchBlip(data)
     local coords = data.coords
     if not coords or not coords.x or not coords.y or not coords.z then
@@ -657,4 +658,5 @@ function DispatchBlip(data)
             RemoveBlip(blip)
         end
     end)
+end
 end

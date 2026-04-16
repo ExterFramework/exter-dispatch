@@ -3,13 +3,132 @@ local dispatchs = {}
 
 local units = {}
 local playershaveunit = {}
+local dispatchCooldowns = {}
 
-RegisterServerEvent('exter-dispatch:addDispatch')
-AddEventHandler('exter-dispatch:addDispatch', function(data)
+local MAX_TEXT_LENGTH = 160
+local DISPATCH_COOLDOWN_MS = 1500
+
+local function trimText(value, maxLen)
+    if type(value) ~= "string" then
+        return ""
+    end
+
+    local cleaned = value:gsub("[%c]", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    if #cleaned > maxLen then
+        return cleaned:sub(1, maxLen)
+    end
+
+    return cleaned
+end
+
+local function getSafeCoords(coords, source)
+    if type(coords) == "vector3" then
+        return { x = coords.x, y = coords.y, z = coords.z }
+    end
+
+    if type(coords) == "table" and tonumber(coords.x) and tonumber(coords.y) and tonumber(coords.z) then
+        return {
+            x = tonumber(coords.x),
+            y = tonumber(coords.y),
+            z = tonumber(coords.z),
+        }
+    end
+
+    local ped = GetPlayerPed(source)
+    if ped and ped > 0 then
+        local pedCoords = GetEntityCoords(ped)
+        return { x = pedCoords.x, y = pedCoords.y, z = pedCoords.z }
+    end
+
+    return { x = 0.0, y = 0.0, z = 0.0 }
+end
+
+local function sanitizeDispatchData(source, data)
+    if type(data) ~= "table" then
+        return nil
+    end
+
+    local safeJobs = {}
+    local allowedJobs = {}
+    for _, jobConfig in ipairs(Config.EmergencyJobs or {}) do
+        allowedJobs[jobConfig.name] = true
+    end
+
+    if type(data.jobs) == "table" then
+        for _, jobName in ipairs(data.jobs) do
+            if type(jobName) == "string" and allowedJobs[jobName] then
+                safeJobs[#safeJobs + 1] = jobName
+            end
+        end
+    end
+
+    if #safeJobs == 0 then
+        return nil
+    end
+
+    local safeValues = {}
+    if type(data.values) == "table" then
+        for i = 1, math.min(#data.values, 6) do
+            local item = data.values[i]
+            if type(item) == "table" then
+                safeValues[#safeValues + 1] = {
+                    text = trimText(item.text, MAX_TEXT_LENGTH),
+                    icon = trimText(item.icon, 64),
+                }
+            end
+        end
+    end
+
+    if #safeValues == 0 then
+        safeValues = {
+            {
+                text = "New Dispatch",
+                icon = "fa-solid fa-bell",
+            }
+        }
+    end
+
+    local safeBlip = {
+        blipid = tonumber(data.blip and data.blip.blipid) or 1,
+        blipcolor = tonumber(data.blip and data.blip.blipcolor) or 1
+    }
+
+    return {
+        title = trimText(data.title, 80),
+        code = trimText(data.code, 24),
+        values = safeValues,
+        valuestwo = {},
+        jobs = safeJobs,
+        coords = getSafeCoords(data.coords, source),
+        blip = safeBlip,
+        active = false,
+        dispatchnumber = nil
+    }
+end
+
+local function pushDispatch(data)
     data.dispatchnumber = #dispatchs + 1
     data.date = os.date("%Y-%m-%d %H:%M:%S")
     dispatchs[#dispatchs + 1] = data
     TriggerClientEvent('exter-dispatch:client:dispatch', -1, data)
+end
+
+RegisterServerEvent('exter-dispatch:addDispatch')
+AddEventHandler('exter-dispatch:addDispatch', function(data)
+    local src = source
+    local now = GetGameTimer()
+
+    if dispatchCooldowns[src] and (now - dispatchCooldowns[src]) < DISPATCH_COOLDOWN_MS then
+        return
+    end
+
+    dispatchCooldowns[src] = now
+    local safeData = sanitizeDispatchData(src, data)
+    if not safeData then
+        return
+    end
+
+    pushDispatch(safeData)
 end)
 
 QBCore.Functions.CreateCallback('exter-dispatch:getDispatchs', function(source, cb)
@@ -88,11 +207,12 @@ end
 
 function leaveUnit(source)
     local unitid = playershaveunit[source]
-    if unitid then
+    if unitid and units[unitid] then
         for k, v in pairs(units[unitid].officer) do
             if v.source == source then
                 table.remove(units[unitid].officer, k)
                 playershaveunit[source] = nil
+                break
             end
         end
     end
@@ -101,7 +221,7 @@ end
 
 function deleteUnit(source)
     local unitid = playershaveunit[source]
-    if unitid then
+    if unitid and units[unitid] then
         if units[unitid].unithead == source then
             for k, v in pairs(units[unitid].officer) do
                 playershaveunit[v.source] = nil
@@ -196,10 +316,14 @@ end)
 RegisterServerEvent('exter-dispatch:setActive', function(id)
     local src = source
     local myunit = playershaveunit[source]
-    if myunit then
+    local dispatchId = tonumber(id)
+    if not dispatchId or not dispatchs[dispatchId] then
+        return
+    end
+    if myunit and units[myunit] then
         local unitcallcode = units[myunit].callname
-        dispatchs[id].active = true
-        dispatchs[id].valuestwo = {{
+        dispatchs[dispatchId].active = true
+        dispatchs[dispatchId].valuestwo = {{
             text = unitcallcode,
             icon = "fa-solid fa-walkie-talkie"
         }}
@@ -209,7 +333,12 @@ RegisterServerEvent('exter-dispatch:setActive', function(id)
 end)
 
 QBCore.Functions.CreateCallback('exter-dispatch:getLocation', function(source, cb, id)
-    cb(dispatchs[id].coords)
+    local dispatchId = tonumber(id)
+    if dispatchId and dispatchs[dispatchId] and dispatchs[dispatchId].coords then
+        cb(dispatchs[dispatchId].coords)
+        return
+    end
+    cb(nil)
 end)
 
 RegisterServerEvent("exter-dispatch:getJobById")
@@ -223,46 +352,13 @@ AddEventHandler("exter-dispatch:getJobById", function(targetId)
     end
 end)
 
-RegisterServerEvent('exter-dispatch:checkPoliceShoot', function(targetId)
-    local shooter = source
-    local target = QBCore.Functions.GetPlayer(targetId)
-
-    if not target then
-        return
-    end
-
-    if target.PlayerData.job.name == "police" then
-        exports['exter-dispatch']:sendDispatch({
-            title = "Officer Under Fire",
-            code = "10-99",
-            values = {{
-                text = "Officer Under Fire",
-                icon = "fa-solid fa-gun"
-            }, {
-                text = os.date("%H:%M:%S"),
-                icon = "fa-solid fa-clock"
-            }},
-            valuestwo = {},
-            jobs = {"police"},
-            coords = GetEntityCoords(GetPlayerPed(shooter)),
-            blip = {
-                blipid = 161,
-                blipcolor = 1
-            },
-            active = false,
-            dispatchnumber = nil
-        })
-    end
-end)
-
 RegisterServerEvent('exter-dispatch:checkPoliceShoot')
 AddEventHandler('exter-dispatch:checkPoliceShoot', function(targetId)
     local shooter = source
     local target = QBCore.Functions.GetPlayer(targetId)
 
     if target and target.PlayerData.job.name == "police" then
-
-        exports['exter-dispatch']:sendDispatch({
+        pushDispatch({
             title = "Officer Under Fire",
             code = "10-99",
             values = {{
@@ -274,7 +370,7 @@ AddEventHandler('exter-dispatch:checkPoliceShoot', function(targetId)
             }},
             valuestwo = {},
             jobs = {"police"},
-            coords = GetEntityCoords(GetPlayerPed(shooter)),
+            coords = getSafeCoords(GetEntityCoords(GetPlayerPed(shooter)), shooter),
             blip = {
                 blipid = 161,
                 blipcolor = 1
@@ -282,6 +378,5 @@ AddEventHandler('exter-dispatch:checkPoliceShoot', function(targetId)
             active = false,
             dispatchnumber = nil
         })
-    else
     end
 end)

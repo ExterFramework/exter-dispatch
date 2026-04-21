@@ -1,19 +1,138 @@
-local QBCore = exports['qb-core']:GetCoreObject()
 local activeBlips = {}
-local shotsFired = 0
-local SHOTS_REQUIRED = 7 -- Jumlah peluru yang harus keluar sebelum dispatch dikirim
-local lastWeapon = nil
-local recentExplosions = {}
+local callbackResolvers = {}
+local callbackNonce = 0
+local framework = nil
+local coreObject = nil
 
+local lastShotDispatch = 0
+local lastSpeedDispatch = 0
+local lastDeathDispatch = 0
+local deathReported = false
+
+local function countEntries(tbl)
+    local count = 0
+    for _ in pairs(tbl) do
+        count = count + 1
+    end
+    return count
+end
+
+local function detectFramework()
+    if Config.Framework ~= "auto" then
+        return Config.Framework
+    end
+
+    if GetResourceState("qbx_core") == "started" then
+        return "qbox"
+    end
+
+    if GetResourceState("qb-core") == "started" then
+        return "qbcore"
+    end
+
+    if GetResourceState("es_extended") == "started" then
+        return "esx"
+    end
+
+    return "standalone"
+end
+
+local function initFramework()
+    framework = detectFramework()
+
+    if framework == "qbcore" then
+        coreObject = exports['qb-core']:GetCoreObject()
+    elseif framework == "esx" then
+        coreObject = exports['es_extended']:getSharedObject()
+    end
+
+    print(("[exter-dispatch] Client framework: %s"):format(framework))
+end
+
+local function getPlayerJob()
+    if framework == "qbcore" and coreObject then
+        local pd = coreObject.Functions.GetPlayerData()
+        return pd and pd.job and pd.job.name or "unemployed"
+    elseif framework == "esx" and coreObject then
+        local pd = coreObject.GetPlayerData()
+        return pd and pd.job and pd.job.name or "unemployed"
+    end
+    return "standalone"
+end
+
+local function notify(msg, nType)
+    if Config.Notifications.prefer == "ox_lib" or (Config.Notifications.prefer == "auto" and GetResourceState("ox_lib") == "started") then
+        lib.notify({ title = Config.Notifications.title, description = msg, type = nType or "inform" })
+        return
+    end
+
+    if framework == "qbcore" and coreObject then
+        coreObject.Functions.Notify(msg, nType or "primary")
+        return
+    end
+
+    if framework == "esx" then
+        TriggerEvent('esx:showNotification', msg)
+        return
+    end
+
+    TriggerEvent('chat:addMessage', { args = { "DISPATCH", msg } })
+end
+
+local function triggerServerCallback(name, payload, cb)
+    callbackNonce = callbackNonce + 1
+    local requestId = callbackNonce
+    callbackResolvers[requestId] = cb
+    TriggerServerEvent('exter-dispatch:server:triggerCallback', name, requestId, payload)
+end
+
+RegisterNetEvent('exter-dispatch:client:callbackResponse', function(requestId, data)
+    if callbackResolvers[requestId] then
+        callbackResolvers[requestId](data)
+        callbackResolvers[requestId] = nil
+    end
+end)
+
+local function getStreet(coords)
+    local streetHash = GetStreetNameAtCoord(coords.x, coords.y, coords.z)
+    return GetStreetNameFromHashKey(streetHash)
+end
+
+local function getWeaponDescriptor(weapon)
+    local label = GetLabelText(GetWeaponDisplayNameFromHash(weapon))
+    if not label or label == "NULL" then
+        label = "Unknown Weapon"
+    end
+
+    local group = GetWeapontypeGroup(weapon)
+    local groupMap = {
+        [416676503] = "Pistol",
+        [-957766203] = "SMG",
+        [970310034] = "Assault Rifle",
+        [860033945] = "Shotgun",
+        [3082541095] = "Sniper",
+        [1159398588] = "LMG",
+        [2725924767] = "Heavy",
+        [1548507267] = "Throwable",
+        [3566412244] = "Melee",
+    }
+
+    return label, groupMap[group] or ("Group " .. tostring(group))
+end
+
+function sendDispatch(data)
+    TriggerServerEvent('exter-dispatch:addDispatch', data)
+end
+exports('sendDispatch', sendDispatch)
 
 RegisterCommand(Config.MenuCommand, function()
-    QBCore.Functions.TriggerCallback('exter-dispatch:getDispatchs', function(cb)
-        QBCore.Functions.TriggerCallback('exter-dispatch:getMyUnit', function(cba)
+    triggerServerCallback('exter-dispatch:getDispatchs', nil, function(dispatchData)
+        triggerServerCallback('exter-dispatch:getMyUnit', nil, function(unitData)
             SendNUIMessage({
-                action="openMenu",
-                data = cb,
-                unit = cba,
-                myjob = QBCore.Functions.GetPlayerData().job.name
+                action = "openMenu",
+                data = dispatchData,
+                unit = unitData,
+                myjob = getPlayerJob()
             })
             SetNuiFocus(true, true)
         end)
@@ -22,641 +141,203 @@ end)
 
 RegisterKeyMapping(Config.MenuCommand, 'Open Dispatch Menu', 'keyboard', Config.MenuKey)
 
-
-RegisterNUICallback('getPlayers', function(data,cab)
-    QBCore.Functions.TriggerCallback('exter-dispatch:getJobPlayers', function(cb)
-        cab(cb)
-    end)
+RegisterNUICallback('getPlayers', function(_, cb)
+    triggerServerCallback('exter-dispatch:getJobPlayers', nil, cb)
 end)
 
-RegisterNUICallback('getUnits', function(data,cab)
-    QBCore.Functions.TriggerCallback('exter-dispatch:getUnits', function(cb)
-        cab(cb)
-    end)
+RegisterNUICallback('getUnits', function(_, cb)
+    triggerServerCallback('exter-dispatch:getUnits', nil, cb)
 end)
 
-RegisterNUICallback('canAddtoUnit', function(data,cab)
-    QBCore.Functions.TriggerCallback('exter-dispatch:canAddtoUnit', function(cb)
-        cab(cb)
-    end, data.id)
+RegisterNUICallback('canAddtoUnit', function(data, cb)
+    triggerServerCallback('exter-dispatch:canAddtoUnit', data.id, cb)
 end)
 
-RegisterNUICallback('createUnit', function(data,cab)
-    QBCore.Functions.TriggerCallback('exter-dispatch:createUnit', function(cb)
-        cab(cb)
-    end, data)
+RegisterNUICallback('createUnit', function(data, cb)
+    triggerServerCallback('exter-dispatch:createUnit', data, cb)
 end)
 
-RegisterNUICallback('leaveUnit', function(data,cab)
-    QBCore.Functions.TriggerCallback('exter-dispatch:leaveUnit', function(cb)
-        cab(cb)
-    end, data)
+RegisterNUICallback('leaveUnit', function(_, cb)
+    triggerServerCallback('exter-dispatch:leaveUnit', nil, cb)
 end)
 
-RegisterNUICallback('deleteUnit', function(data,cab)
-    QBCore.Functions.TriggerCallback('exter-dispatch:deleteUnit', function(cb)
-        cab(cb)
-    end, data)
+RegisterNUICallback('deleteUnit', function(_, cb)
+    triggerServerCallback('exter-dispatch:deleteUnit', nil, cb)
 end)
 
-RegisterNUICallback('closeMenu', function()
-    SetNuiFocus(false, false)
-end)
-
-function sendDispatch(data)
-    TriggerServerEvent('exter-dispatch:addDispatch', data)
-end
-
-exports('sendDispatch', sendDispatch)
-
-CreateThread(function()
-    while true do
-        Wait(300)
-
-        local playerPed = PlayerPedId()
-
-        if IsPedShooting(playerPed) then
-            local _, targetEntity = GetEntityPlayerIsFreeAimingAt(PlayerId())
-
-            if DoesEntityExist(targetEntity) and IsPedAPlayer(targetEntity) then
-                local targetPlayer = NetworkGetPlayerIndexFromPed(targetEntity)
-                local targetServerId = GetPlayerServerId(targetPlayer)
-
-                TriggerServerEvent("exter-dispatch:getJobById", targetServerId)
-            end
-        end
-    end
-end)
-
--- Terima job dari server, dan kirim dispatch jika target adalah POLICE
-RegisterNetEvent("exter-dispatch:jobResult")
-AddEventHandler("exter-dispatch:jobResult", function(job, coords)
-    if job == "police" then
-        exports['exter-dispatch']:sendDispatch({
-            title = "Officer Under Fire",
-            code = "10-99",
-            values = {
-                {
-                    text = "Officer Under Fire",
-                    icon = "fa-solid fa-gun",
-                },
-                {
-                    text = os.date("%H:%M:%S"),
-                    icon = "fa-solid fa-clock",
-                },
-            },
-            valuestwo = {},
-            jobs = {"police"},
-            coords = coords,
-            blip = {
-                blipid = 161,
-                blipcolor = 1,
-            },
-            active = false,
-            dispatchnumber = nil
-        })
-    end
-end)
-
-RegisterNUICallback('setActive', function(data,cb)
-    TriggerServerEvent('exter-dispatch:setActive', data.id)
-    ExecuteCommand(Config.MenuCommand)
-    cb(true)
-end)
-
-RegisterNUICallback('setLocation', function(data,cb)
-    QBCore.Functions.TriggerCallback('exter-dispatch:getLocation', function(location)
+RegisterNUICallback('setLocation', function(data, cb)
+    triggerServerCallback('exter-dispatch:getLocation', data.id, function(location)
         if location and location.x and location.y then
             SetNewWaypoint(location.x, location.y)
             cb(true)
             return
         end
         cb(false)
-    end, data.id)
+    end)
 end)
 
-CreateThread(function()
-    local alreadySent = false
+RegisterNUICallback('closeMenu', function(_, cb)
+    SetNuiFocus(false, false)
+    cb(true)
+end)
 
-    while true do
-        Wait(1000)
-
-        local playerPed = PlayerPedId()
-        if IsPedDeadOrDying(playerPed, true) and not alreadySent then
-            alreadySent = true
-
-            local coords = GetEntityCoords(playerPed)
-
-            -- Menggunakan GetGameTimer untuk mendapatkan waktu saat ini
-            local currentTime = GetGameTimer() -- Waktu dalam milidetik
-            local hours = math.floor(currentTime / 3600000) % 24
-            local minutes = math.floor(currentTime / 60000) % 60
-            local seconds = math.floor(currentTime / 1000) % 60
-            local formattedTime = string.format("%02d:%02d:%02d", hours, minutes, seconds)
-
-            -- Kirim dispatch ke server
-            exports['exter-dispatch']:sendDispatch({
-                title = "Person Down",
-                code = "10-52",
-                values = {
-                    {
-                        text = "Injured Person",
-                        icon = "fa-solid fa-heart-circle-minus",
-                    },
-                    {
-                        text = formattedTime,  -- Waktu yang sudah diformat
-                        icon = "fa-solid fa-clock",
-                    },
-                },
-                valuestwo = {},
-                jobs = {"ambulance", "police"},
-                coords = coords,
-                blip = {
-                    blipid = 153, -- Icon emergency
-                    blipcolor = 3, -- Yellow
-                },
-                active = false,
-                dispatchnumber = nil
-            })
-        elseif not IsPedDeadOrDying(playerPed, true) and alreadySent then
-            -- Reset ketika revive atau hidup lagi
-            alreadySent = false
-        end
-    end
+RegisterNUICallback('setActive', function(data, cb)
+    TriggerServerEvent('exter-dispatch:setActive', data.id)
+    ExecuteCommand(Config.MenuCommand)
+    cb(true)
 end)
 
 RegisterNetEvent('exter-dispatch:client:dispatch', function(data)
-    local PlayerData = QBCore.Functions.GetPlayerData()
-    local canisee = false 
-    for k,v in pairs(data.jobs) do 
-        if v == PlayerData.job.name then 
-            canisee = true 
-            break 
+    local job = getPlayerJob()
+    local canSee = false
+    for _, targetJob in pairs(data.jobs or {}) do
+        if targetJob == job then
+            canSee = true
+            break
         end
-    end 
-    if not canisee then 
-        return 
-    end 
+    end
+    if not canSee then return end
 
-    SendNUIMessage({
-        action="addispatch",
-        data = data
-    })
-
+    SendNUIMessage({ action = "addispatch", data = data })
     DispatchBlip(data)
 end)
 
--- Command untuk membuat blip darurat 911
-RegisterCommand("911", function(source, args, rawCommand)
-    -- Mengambil seluruh argumen yang dimasukkan pemain setelah perintah /911
-    local message = table.concat(args, " ")
-
-    local coords = GetEntityCoords(PlayerPedId())  -- Koordinat pemain yang melakukan panggilan
-
-    -- Kirim dispatch ke server
-    exports['exter-dispatch']:sendDispatch({
-        title = "Emergency Dispatch",
-        code = "10-00",
-        values = {
-            {
-                text = "911 Emergency Call",
-                icon = "fa-solid fa-phone",
-            },
-            {
-                text = message,  -- Menggunakan pesan yang ditulis pemain
-                icon = "fa-solid fa-comment",
-            },
-        },
-        valuestwo = {},
-        jobs = {"police"},  -- Dispatch hanya untuk polisi
-        coords = coords,  -- Tetap kirim koordinat untuk dispatch
-        blip = {
-            blipid = 161, -- Blip icon ID, dapat disesuaikan
-            blipcolor = 1, -- Blip color ID, dapat disesuaikan
-        },
-        active = false,
-        dispatchnumber = nil
-    })
-
-    -- Suara hanya diputar untuk pemain dengan pekerjaan "police"
-    local playerJob = QBCore.Functions.GetPlayerData().job.name  -- Mendapatkan pekerjaan pemain
-    if playerJob == "police" then
-        TriggerEvent('InteractSound_CL:PlayOnAll', 'panicbutton', 1.0) -- Suara untuk sinyal darurat
-    end
-
-    -- Kirim pesan ke chat dengan isi pesan yang ditulis pemain
-    TriggerEvent('chatMessage', 'DISPATCH ', {255, 0, 0}, message, 'game')
-
-    -- Menambahkan blip di peta untuk lokasi panggilan
-    local blip = AddBlipForCoord(coords.x, coords.y, coords.z)
-    SetBlipSprite(blip, 161)  -- Set icon blip (sesuai dengan yang sudah dipilih)
-    SetBlipColour(blip, 1)  -- Set warna blip (sesuai dengan yang sudah dipilih)
-    SetBlipScale(blip, 1.0)  -- Ukuran blip
-    SetBlipAsShortRange(blip, true)  -- Blip hanya terlihat di jarak dekat
-    BeginTextCommandSetBlipName('STRING')
-    AddTextComponentString("911 Emergency")  -- Nama untuk blip
-    EndTextCommandSetBlipName(blip)
-    
-    -- Menyimpan blip untuk bisa dihapus nanti
-    table.insert(activeBlips, blip)
-    
-    -- Menghapus blip setelah beberapa waktu (misalnya, 3 menit)
-    Citizen.SetTimeout(180000, function()  -- 180000 ms = 3 menit
-        if #activeBlips > 0 then
-            local blipToRemove = table.remove(activeBlips)  -- Menghapus dan mengambil blip terakhir
-            RemoveBlip(blipToRemove)  -- Menghapus blip dari peta
-        end
-    end)
-end)
-
-
--- Command untuk membuat blip non-darurat 311
-RegisterCommand("311", function(source, args, rawCommand)
-    -- Mengambil seluruh argumen yang dimasukkan pemain setelah perintah /311
-    local message = table.concat(args, " ")
-
-    local coords = GetEntityCoords(PlayerPedId())  -- Koordinat pemain yang melakukan panggilan
-
-    -- Kirim dispatch ke server
-    exports['exter-dispatch']:sendDispatch({
-        title = "Non-Emergency Dispatch",
-        code = "10-00",
-        values = {
-            {
-                text = "311 Non-Emergency Call",
-                icon = "fa-solid fa-phone",
-            },
-            {
-                text = message,  -- Menggunakan pesan yang ditulis pemain
-                icon = "fa-solid fa-comment",
-            },
-        },
-        valuestwo = {},
-        jobs = {"police", "ambulance"},  -- Disesuaikan untuk pekerjaan yang relevan
-        coords = coords,  -- Tetap kirim koordinat untuk dispatch
-        blip = {
-            blipid = 161, -- Blip icon ID, dapat disesuaikan
-            blipcolor = 2, -- Blip color ID, bisa menggunakan warna berbeda
-        },
-        active = true,
-        dispatchnumber = nil
-    })
-
-    -- Suara hanya diputar untuk pemain dengan pekerjaan "police", "ambulance", atau "mechanic"
-    local playerJob = QBCore.Functions.GetPlayerData().job.name  -- Mendapatkan pekerjaan pemain
-    if playerJob == "police" or playerJob == "ambulance" or playerJob == "mechanic" then
-        TriggerEvent('InteractSound_CL:PlayOnAll', 'panicbutton', 1.0) -- Suara untuk sinyal darurat
-    end
-
-    -- Kirim pesan ke chat dengan isi pesan yang ditulis pemain
-    TriggerEvent('chatMessage', 'DISPATCH ', {0, 255, 255}, message, 'game')  -- Pesan chat berwarna cyan
-
-    -- Menambahkan blip di peta untuk lokasi panggilan
-    local blip = AddBlipForCoord(coords.x, coords.y, coords.z)
-    SetBlipSprite(blip, 161)  -- Set icon blip (sesuai dengan yang sudah dipilih)
-    SetBlipColour(blip, 2)  -- Set warna blip (sesuai dengan yang sudah dipilih)
-    SetBlipScale(blip, 1.0)  -- Ukuran blip
-    SetBlipAsShortRange(blip, true)  -- Blip hanya terlihat di jarak dekat
-    BeginTextCommandSetBlipName('STRING')
-    AddTextComponentString("311 Non-Emergency")  -- Nama untuk blip
-    EndTextCommandSetBlipName(blip)
-
-    -- Menyimpan blip untuk bisa dihapus nanti
-    table.insert(activeBlips, blip)
-
-    -- Menghapus blip setelah beberapa waktu (misalnya, 3 menit)
-    Citizen.SetTimeout(180000, function()  -- 180000 ms = 3 menit
-        if #activeBlips > 0 then
-            local blipToRemove = table.remove(activeBlips)  -- Menghapus dan mengambil blip terakhir
-            RemoveBlip(blipToRemove)  -- Menghapus blip dari peta
-        end
-    end)
-end)
-
--- Monitor tembakan pemain
-Citizen.CreateThread(function()
+CreateThread(function()
     while true do
-        Wait(50)
-        local playerPed = PlayerPedId()
+        Wait(100)
+        local ped = PlayerPedId()
 
-        if DoesEntityExist(playerPed) and not IsEntityDead(playerPed) then
-            if IsPedShooting(playerPed) and not IsPedCurrentWeaponSilenced(playerPed) then
-                local _, weapon = GetCurrentPedWeapon(playerPed)
+        if IsPedShooting(ped) and not IsPedCurrentWeaponSilenced(ped) then
+            local now = GetGameTimer()
+            if (now - lastShotDispatch) < Config.ShotsDispatchCooldownMs then
+                goto continue
+            end
 
-                -- Deteksi ganti senjata
-                if weapon ~= lastWeapon then
-                    lastWeapon = weapon
-                    shotsFired = 0
-                end
+            local _, weapon = GetCurrentPedWeapon(ped)
+            local coords = GetEntityCoords(ped)
+            local street = getStreet(coords)
+            local weaponLabel, weaponType = getWeaponDescriptor(weapon)
 
-                shotsFired = shotsFired + 1
+            sendDispatch({
+                title = "Shots Fired",
+                code = "10-71",
+                values = {
+                    { text = street, icon = "fa-solid fa-road" },
+                    { text = weaponLabel, icon = "fa-solid fa-gun" },
+                    { text = weaponType, icon = "fa-solid fa-layer-group" }
+                },
+                jobs = {"police"},
+                coords = coords,
+                blip = { blipid = 110, blipcolor = 1, radius = 120.0 }
+            })
 
-                if shotsFired >= SHOTS_REQUIRED then
-                    shotsFired = 0 -- Reset setelah kirim dispatch
+            lastShotDispatch = now
+        end
+        ::continue::
+    end
+end)
 
-                    local coords = GetEntityCoords(playerPed)
-                    local streetHash, _ = GetStreetNameAtCoord(coords.x, coords.y, coords.z)
-                    local location = streetHash and GetStreetNameFromHashKey(streetHash) or "Unknown Area"
-                    
-                    local weaponLabel = GetWeaponLabel(weapon)
-                    local weaponClass = GetWeaponClass(weapon)
-
-                    -- Kirim dispatch
-                    exports['exter-dispatch']:sendDispatch({
-                        title = "Shots Fired",
-                        code = "10-71",
+CreateThread(function()
+    while true do
+        Wait(600)
+        local ped = PlayerPedId()
+        if IsPedInAnyVehicle(ped, false) then
+            local vehicle = GetVehiclePedIsIn(ped, false)
+            if GetPedInVehicleSeat(vehicle, -1) == ped then
+                local mph = math.floor(GetEntitySpeed(vehicle) * 2.236936)
+                local now = GetGameTimer()
+                if mph >= Config.SpeedThresholdMph and (now - lastSpeedDispatch) > Config.SpeedDispatchCooldownMs then
+                    local coords = GetEntityCoords(ped)
+                    sendDispatch({
+                        title = "High Speed Vehicle",
+                        code = "10-11",
                         values = {
-                            {
-                                text = location,
-                                icon = "fa-solid fa-earth-americas",
-                            },
-                            {
-                                text = "Priority 1",
-                                icon = "fa-solid fa-bolt",
-                            },
-                            {
-                                text = ("%s (%s)"):format(weaponLabel, weaponClass), -- Tampilkan nama senjata + kelasnya
-                                icon = "fa-solid fa-gun",
-                            },
+                            { text = getStreet(coords), icon = "fa-solid fa-road" },
+                            { text = ("%d MPH"):format(mph), icon = "fa-solid fa-gauge-high" }
                         },
-                        valuestwo = {},
-                        jobs = {"police", "ambulance"},
+                        jobs = {"police"},
                         coords = coords,
-                        blip = {
-                            blipid = 110,
-                            blipcolor = 1,
-                        },
-                        active = false,
-                        dispatchnumber = nil
+                        blip = { blipid = 225, blipcolor = 47, radius = 80.0 }
                     })
-
-                    -- Cek job sebelum munculin chat dan suara
-                    local playerJob = QBCore.Functions.GetPlayerData().job.name
-                    if playerJob == "ambulance" or playerJob == "police" then
-                        -- Kirim pesan chat berwarna cyan
-                        local message = ("Shots fired at %s with %s (%s)"):format(location, weaponLabel, weaponClass)
-                        TriggerEvent('chatMessage', 'DISPATCH ', {0, 255, 255}, message, 'game')
-
-                        -- Play sound effect
-                        TriggerEvent('InteractSound_CL:PlayOnAll', 'panicbutton', 0.5)
-                    end
+                    lastSpeedDispatch = now
                 end
             end
         end
     end
 end)
 
--- Fungsi buat ambil label nama senjata
-function GetWeaponLabel(weapon)
-    if not IsWeaponValid(weapon) then return "Unknown Weapon" end
-
-    local weapons = {
-        [`WEAPON_PISTOL`] = "Pistol",
-        [`WEAPON_PISTOL_MK2`] = "Pistol Mk II",
-        [`WEAPON_SMG`] = "SMG",
-        [`WEAPON_MICROSMG`] = "Micro SMG",
-        [`WEAPON_SMG_MK2`] = "SMG Mk II",
-        [`WEAPON_CARBINERIFLE`] = "Carbine Rifle",
-        [`WEAPON_CARBINERIFLE_MK2`] = "Carbine Rifle Mk II",
-        [`WEAPON_PUMPSHOTGUN`] = "Pump Shotgun",
-        [`WEAPON_SAWNOFFSHOTGUN`] = "Sawed-Off Shotgun",
-        [`WEAPON_HEAVYPISTOL`] = "Heavy Pistol",
-        [`WEAPON_VINTAGEPISTOL`] = "Vintage Pistol",
-        [`WEAPON_SNIPERRIFLE`] = "Sniper Rifle",
-        [`WEAPON_HEAVYSNIPER`] = "Heavy Sniper",
-        [`WEAPON_MG`] = "Machine Gun",
-        [`WEAPON_COMBATMG`] = "Combat MG",
-        [`WEAPON_GRENADELAUNCHER`] = "Grenade Launcher",
-        [`WEAPON_GRENADELAUNCHER_SMOKE`] = "Smoke Grenade Launcher",
-        [`WEAPON_BAT`] = "Baseball Bat",
-        [`WEAPON_KNIFE`] = "Knife",
-        [`WEAPON_MACHETE`] = "Machete",
-        [`WEAPON_STUNGUN`] = "Stun Gun",
-        [`WEAPON_FLAREGUN`] = "Flare Gun",
-        [`WEAPON_FIREEXTINGUISHER`] = "Fire Extinguisher",
-        [`WEAPON_BZGAS`] = "BZ Gas",
-        [`WEAPON_CROWBAR`] = "Crowbar",
-        [`WEAPON_RAILGUN`] = "Railgun",
-        [`WEAPON_HOMINGLAUNCHER`] = "Homing Launcher",
-        [`WEAPON_COMBATPISTOL`] = "Combat Pistol",
-        [`WEAPON_BULLPUPRIFLE`] = "Bullpup Rifle",
-        [`WEAPON_COMBATSHOTGUN`] = "Combat Shotgun",
-        [`WEAPON_HEAVYSHOTGUN`] = "Heavy Shotgun",
-        [`WEAPON_MUSKET`] = "Musket"
-    }    
-
-    return weapons[weapon] or "Unknown Weapon"
-end
-
--- Fungsi buat ambil kelas senjata
-function GetWeaponClass(weapon)
-    if not IsWeaponValid(weapon) then return "Unknown Class" end
-
-    if weapon == `WEAPON_PISTOL` or weapon == `WEAPON_PISTOL_MK2` or weapon == `WEAPON_HEAVYPISTOL` or weapon == `WEAPON_VINTAGEPISTOL` or weapon == `WEAPON_COMBATPISTOL` then
-        return "Pistol"
-    elseif weapon == `WEAPON_SMG` or weapon == `WEAPON_MICROSMG` or weapon == `WEAPON_SMG_MK2` then
-        return "SMG"
-    elseif weapon == `WEAPON_CARBINERIFLE` or weapon == `WEAPON_CARBINERIFLE_MK2` or weapon == `WEAPON_BULLPUPRIFLE` then
-        return "Rifle"
-    elseif weapon == `WEAPON_PUMPSHOTGUN` or weapon == `WEAPON_SAWNOFFSHOTGUN` or weapon == `WEAPON_COMBATSHOTGUN` or weapon == `WEAPON_HEAVYSHOTGUN` then
-        return "Shotgun"
-    elseif weapon == `WEAPON_SNIPERRIFLE` or weapon == `WEAPON_HEAVYSNIPER` then
-        return "Sniper"
-    elseif weapon == `WEAPON_MG` or weapon == `WEAPON_COMBATMG` then
-        return "Machine Gun"
-    elseif weapon == `WEAPON_GRENADELAUNCHER` or weapon == `WEAPON_GRENADELAUNCHER_SMOKE` then
-        return "Launcher"
-    elseif weapon == `WEAPON_RAILGUN` then
-        return "Energy Weapon"
-    elseif weapon == `WEAPON_HOMINGLAUNCHER` then
-        return "Missile Launcher"
-    elseif weapon == `WEAPON_STUNGUN` then
-        return "Stun Gun"
-    elseif weapon == `WEAPON_BAT` or weapon == `WEAPON_KNIFE` or weapon == `WEAPON_MACHETE` or weapon == `WEAPON_CROWBAR` then
-        return "Melee Weapon"
-    elseif weapon == `WEAPON_FIREEXTINGUISHER` then
-        return "Utility"
-    elseif weapon == `WEAPON_BZGAS` then
-        return "Gas Weapon"
-    elseif weapon == `WEAPON_FLAREGUN` then
-        return "Flare Gun"
-    elseif weapon == `WEAPON_MUSKET` then
-        return "Musket"
-    else
-        return "Unknown Class"
-    end
-end
-
-
--- Monitor pemain tewas
-local wasDead = false
-local deathReported = false
-
-Citizen.CreateThread(function()
+CreateThread(function()
     while true do
         Wait(1000)
+        local ped = PlayerPedId()
+        local isDead = IsEntityDead(ped)
 
-        local playerPed = PlayerPedId()
-        local isDead = IsEntityDead(playerPed)
+        if isDead and not deathReported and (GetGameTimer() - lastDeathDispatch) > Config.DeathDispatchCooldownMs then
+            local coords = GetEntityCoords(ped)
+            local jobs = {"ambulance"}
+            if Config.SendDeathToPolice then jobs[#jobs + 1] = "police" end
 
-        if isDead and not deathReported then
-            local coords = GetEntityCoords(playerPed)
-            local streetHash, _ = GetStreetNameAtCoord(coords.x, coords.y, coords.z)
-            local streetName = GetStreetNameFromHashKey(streetHash)
-
-            exports['exter-dispatch']:sendDispatch({
+            sendDispatch({
                 title = "Person Down",
                 code = "10-47",
                 values = {
-                    {
-                        text = streetName,
-                        icon = "fa-solid fa-earth-americas",
-                    },
-                    {
-                        text = "Priority 2",
-                        icon = "fa-solid fa-bolt",
-                    },
+                    { text = getStreet(coords), icon = "fa-solid fa-map-location-dot" },
+                    { text = "Medical assistance required", icon = "fa-solid fa-heart-pulse" }
                 },
-                valuestwo = {},
-                jobs = {"ambulance", "police"},
-                coords = {
-                    x = coords.x,
-                    y = coords.y,
-                    z = coords.z
-                },
-                blip = {
-                    blipid = 274, -- Skull icon
-                    blipcolor = 1,
-                },
-                active = false,
-                dispatchnumber = nil
+                jobs = jobs,
+                coords = coords,
+                blip = { blipid = 153, blipcolor = 1, radius = 60.0 }
             })
 
-            local playerData = QBCore.Functions.GetPlayerData()
-            local job = playerData.job and playerData.job.name
-            if job == "ambulance" or job == "police" then
-                TriggerEvent('chatMessage', 'DISPATCH ', {255, 0, 0}, ('[10-47] Person Down at %s'):format(streetName), 'game')
-                TriggerEvent('InteractSound_CL:PlayOnAll', 'panicbutton', 0.5)
-            end
-
             deathReported = true
-            wasDead = true
-        elseif not isDead and wasDead then
-            -- Reset saat hidup lagi
-            wasDead = false
+            lastDeathDispatch = GetGameTimer()
+        elseif not isDead then
             deathReported = false
         end
     end
 end)
 
---ledakan
-Citizen.CreateThread(function()
-    while true do
-        Wait(300)
-
-        local playerPed = PlayerPedId()
-        local playerCoords = GetEntityCoords(playerPed)
-        local currentTime = GetGameTimer()
-
-        if IsExplosionInSphere(-1, playerCoords.x, playerCoords.y, playerCoords.z, 40.0) then
-            -- Estimasi lokasi ledakan
-            local camRot = GetGameplayCamRot(2)
-            local camCoord = GetGameplayCamCoord()
-            local forwardVector = vector3(
-                -math.sin(math.rad(camRot.z)) * math.abs(math.cos(math.rad(camRot.x))),
-                math.cos(math.rad(camRot.z)) * math.abs(math.cos(math.rad(camRot.x))),
-                math.sin(math.rad(camRot.x))
-            )
-            local explosionCoords = camCoord + (forwardVector * 25.0)
-
-            -- Cek apakah sudah pernah dikirim untuk lokasi ini
-            local duplicate = false
-            for _, v in ipairs(recentExplosions) do
-                local distance = #(vector3(v.x, v.y, v.z) - explosionCoords)
-                if distance < 20.0 and currentTime - v.time < 10000 then
-                    duplicate = true
-                    break
-                end
-            end
-
-            if not duplicate then
-                -- Simpan lokasi dan waktu ledakan
-                table.insert(recentExplosions, { x = explosionCoords.x, y = explosionCoords.y, z = explosionCoords.z, time = currentTime })
-
-                -- Bersihkan list lama
-                for i = #recentExplosions, 1, -1 do
-                    if currentTime - recentExplosions[i].time > 15000 then
-                        table.remove(recentExplosions, i)
-                    end
-                end
-
-                -- Kirim dispatch
-                local streetHash = GetStreetNameAtCoord(explosionCoords.x, explosionCoords.y, explosionCoords.z)
-                local streetName = GetStreetNameFromHashKey(streetHash)
-
-                exports['exter-dispatch']:sendDispatch({
-                    title = "Explosion Reported",
-                    code = "10-85",
-                    values = {
-                        {
-                            text = ("Explosion at %s"):format(streetName),
-                            icon = "fa-solid fa-bomb",
-                        },
-                        {
-                            text = string.format("%02d:%02d:%02d", GetClockHours(), GetClockMinutes(), GetClockSeconds()),
-                            icon = "fa-solid fa-clock",
-                        },
-                    },
-                    valuestwo = {},
-                    jobs = {"police", "ambulance"},
-                    coords = {
-                        x = explosionCoords.x,
-                        y = explosionCoords.y,
-                        z = explosionCoords.z
-                    },
-                    blip = {
-                        blipid = 436,
-                        blipcolor = 1,
-                    },
-                    active = false,
-                    dispatchnumber = nil
-                })
-
-                -- Notifikasi ke job
-                local job = QBCore.Functions.GetPlayerData().job.name
-                if job == "police" or job == "ambulance" then
-                    TriggerEvent('chatMessage', 'DISPATCH ', {255, 100, 0}, ("[10-85] Explosion at %s"):format(streetName), 'game')
-                    TriggerEvent('InteractSound_CL:PlayOnAll', 'panicbutton', 0.5)
-                end
-            end
-        end
-    end
-end)
-
 if type(DispatchBlip) ~= "function" then
-function DispatchBlip(data)
-    local coords = data.coords
-    if not coords or not coords.x or not coords.y or not coords.z then
-        return
+    function DispatchBlip(data)
+        if not data.coords then return end
+
+        local main = AddBlipForCoord(data.coords.x, data.coords.y, data.coords.z)
+        SetBlipSprite(main, data.blip and data.blip.blipid or 161)
+        SetBlipColour(main, data.blip and data.blip.blipcolor or 1)
+        SetBlipScale(main, Config.BlipScale)
+        SetBlipAsShortRange(main, false)
+        SetBlipFlashes(main, true)
+        SetBlipFlashInterval(main, Config.BlipFlashInterval)
+        SetBlipRoute(main, true)
+
+        BeginTextCommandSetBlipName("STRING")
+        AddTextComponentString(('%s [#%s]'):format(data.title or "Dispatch", tostring(data.dispatchnumber or "?")))
+        EndTextCommandSetBlipName(main)
+
+        local radius = AddBlipForRadius(data.coords.x, data.coords.y, data.coords.z, data.blip and data.blip.radius or 70.0)
+        SetBlipColour(radius, data.blip and data.blip.blipcolor or 1)
+        SetBlipAlpha(radius, 90)
+
+        activeBlips[data.dispatchnumber or #activeBlips + 1] = { main = main, radius = radius, data = data }
+
+        SendNUIMessage({
+            action = "updateMapState",
+            map = {
+                totalBlips = countEntries(activeBlips),
+                last = {
+                    title = data.title,
+                    x = math.floor(data.coords.x),
+                    y = math.floor(data.coords.y)
+                }
+            }
+        })
+
+        SetTimeout(Config.RemoveBlipAfter, function()
+            if DoesBlipExist(main) then RemoveBlip(main) end
+            if DoesBlipExist(radius) then RemoveBlip(radius) end
+            activeBlips[data.dispatchnumber or 0] = nil
+        end)
     end
-
-    local blip = AddBlipForCoord(coords.x, coords.y, coords.z)
-    SetBlipSprite(blip, data.blip.blipid or 1)
-    SetBlipColour(blip, data.blip.blipcolor or 1)
-    SetBlipScale(blip, 1.0)
-    SetBlipAsShortRange(blip, false)
-
-    BeginTextCommandSetBlipName("STRING")
-    AddTextComponentString(data.title or "Dispatch Call")
-    EndTextCommandSetBlipName(blip)
-
-    table.insert(activeBlips, blip)
-
-    -- Hapus blip setelah 3 menit
-    Citizen.SetTimeout(180000, function()
-        if DoesBlipExist(blip) then
-            RemoveBlip(blip)
-        end
-    end)
 end
-end
+
+initFramework()

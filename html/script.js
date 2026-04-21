@@ -198,7 +198,7 @@ function addDispatchtoMenu(x) {
     $(".recentdispatchs").html("")
     $(".activecalls").html("")
     for (let i = 0; i < x.length; i++) {
-        if (!x[i].jobs.includes(myjob)) { return }
+        if (!x[i].jobs.includes(myjob)) { continue }
 
         let alerts = ``
         let alertdetails = x[i].values
@@ -357,6 +357,11 @@ window.addEventListener("message", function (event) {
         addDispatchtoMenu(event.data.data)
     } else if (event.data.action == "addispatch") {
         addDispatch(event.data.data)
+    } else if (event.data.action == "updateMapState") {
+        const mapState = event.data.map || {}
+        $("#map-total-blips").text(mapState.totalBlips ?? 0)
+        $("#map-last-title").text((mapState.last && mapState.last.title) ? mapState.last.title : "No active call")
+        $("#map-last-coord").text((mapState.last && mapState.last.x !== undefined) ? `${mapState.last.x}, ${mapState.last.y}` : "-")
     }
 });
 

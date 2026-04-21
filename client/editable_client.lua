@@ -1,46 +1,28 @@
 function DispatchBlip(data)
-    -- Menggunakan event InteractSound untuk memutar suara
-    TriggerEvent('InteractSound_CL:PlayOnAll', 'panicbutton', 1.0) -- Ganti 'panicbutton' dengan nama file suara yang valid
+    local coords = data.coords
+    if not coords then return end
 
-    -- Membuat Blip di peta
-    local blip = AddBlipForCoord(data.coords)
-    SetBlipSprite(blip, data.blip.blipid)
+    if GetResourceState('interact-sound') == 'started' then
+        TriggerEvent('InteractSound_CL:PlayOnAll', 'panicbutton', 0.6)
+    end
+
+    local blip = AddBlipForCoord(coords.x, coords.y, coords.z)
+    SetBlipSprite(blip, data.blip and data.blip.blipid or 161)
     SetBlipDisplay(blip, 4)
     SetBlipScale(blip, Config.BlipScale)
-    SetBlipColour(blip, data.blip.blipcolor)
-    SetBlipAsShortRange(blip, true)
+    SetBlipColour(blip, data.blip and data.blip.blipcolor or 1)
+    SetBlipAsShortRange(blip, false)
+    SetBlipFlashes(blip, true)
 
-    -- Menambahkan nama pada Blip
     BeginTextCommandSetBlipName("STRING")
-    AddTextComponentString(data.title .. " [#" .. data.dispatchnumber .. "]")
+    AddTextComponentString((data.title or "Dispatch") .. " [#" .. tostring(data.dispatchnumber or "?") .. "]")
     EndTextCommandSetBlipName(blip)
 
-    -- Membuat Blip berdenyut
-    PulseBlip(blip)
+    local radius = AddBlipForRadius(coords.x, coords.y, coords.z, data.blip and data.blip.radius or 70.0)
+    SetBlipColour(radius, data.blip and data.blip.blipcolor or 1)
+    SetBlipAlpha(radius, 90)
 
-    -- Menghapus Blip setelah beberapa waktu
     Wait(Config.RemoveBlipAfter)
-    RemoveBlip(blip)
+    if DoesBlipExist(blip) then RemoveBlip(blip) end
+    if DoesBlipExist(radius) then RemoveBlip(radius) end
 end
-
--- Example: Dispatch manual test command
-RegisterCommand("dispatchtest", function()
-    local coords = GetEntityCoords(PlayerPedId())
-    exports['exter-dispatch']:sendDispatch({
-        title = "Manual Test Dispatch",
-        code = "10-00",
-        values = {{
-            text = "This is a test from client.lua",
-            icon = "fa-solid fa-bug"
-        }},
-        valuestwo = {},
-        jobs = {"police"},
-        coords = coords,
-        blip = {
-            blipid = 161,
-            blipcolor = 1
-        },
-        active = false,
-        dispatchnumber = nil
-    })
-end)

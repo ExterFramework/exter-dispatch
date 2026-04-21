@@ -253,6 +253,36 @@ p {
     flex-direction: column;
 }
 
+.map-panel {
+    margin: 1vh 2vh 1vh 2vh;
+    padding: 1vh;
+    border-radius: .8vh;
+    background: rgba(8, 12, 20, 0.8);
+    border: .1vh solid rgba(65, 218, 191, 0.35);
+}
+
+.map-title {
+    color: #41DABF;
+    font-size: 1.1vh;
+    margin-bottom: .8vh;
+}
+
+.map-grid {
+    display: flex;
+    flex-direction: column;
+    gap: .5vh;
+}
+
+.map-row {
+    display: flex;
+    justify-content: space-between;
+    color: #fff;
+    font-size: 1.15vh;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: .4vh;
+    padding: .5vh .8vh;
+}
+
 .recentdispatchs {
     margin-left: 2vh;
     height: 70%;
